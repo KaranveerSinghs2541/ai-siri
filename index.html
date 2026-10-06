@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Smart Siri">
+<title>Smart Siri</title>
+<style>
+:root{--bg:#e9efed;--card:#fbfdfc;--ink:#13201e;--mute:#5d716d;--acc:#0e7c6b;--line:#cfdbd8;--meink:#fff;--rec:#c2362f}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1514;--card:#152120;--ink:#e4efec;--mute:#8aa39e;--acc:#35b7a0;--line:#24373a;--meink:#06201b;--rec:#e5645c}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,system-ui,"Segoe UI",sans-serif;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{flex:1;font:600 17px Georgia,"Times New Roman",serif;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button{font:inherit;border:0;border-radius:10px;padding:9px 13px;background:var(--line);color:var(--ink)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.p{background:var(--acc);color:var(--meink)}
+#msgs{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:85%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--card);border:1px solid var(--line)}
+.m.user{align-self:flex-end;background:var(--acc);color:var(--meink);border-color:transparent}
+.empty{margin:auto;color:var(--mute);text-align:center;padding:20px;max-width:30ch}
+#st{min-height:20px;padding:0 14px 4px;color:var(--mute);font-size:13px}
+footer{display:flex;gap:8px;padding:10px 12px;background:var(--card);border-top:1px solid var(--line)}
+footer input{flex:1;min-width:0;font:inherit;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.rec{background:var(--rec);color:#fff}
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:5}
+.ov.on{display:block}
+.pan{position:absolute;top:0;bottom:0;left:0;width:min(86%,340px);background:var(--card);padding:calc(14px + env(safe-area-inset-top,0px)) 14px 14px;overflow-y:auto}
+.pan.c{left:50%;top:50%;bottom:auto;transform:translate(-50%,-50%);width:min(92%,380px);border-radius:16px;padding:16px}
+.ci{display:flex;gap:6px;align-items:center;padding:10px;border-radius:10px;margin-top:8px;border:1px solid var(--line)}
+.ci.on{border-color:var(--acc)}
+.ci div{flex:1;min-width:0}
+.ci b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.ci small{color:var(--mute)}
+label{display:block;margin-top:12px;font-size:13px;color:var(--mute)}
+.pan input[type=text],.pan input[type=password]{width:100%;font:inherit;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+</style>
+</head>
+<body>
+<header>
+  <button id="hb" aria-label="Chat history">History</button>
+  <h1 id="ti">Smart Siri</h1>
+  <button id="nb" aria-label="New chat">New</button>
+  <button id="sb" aria-label="Settings">Settings</button>
+</header>
+<div id="msgs"></div>
+<div id="st"></div>
+<footer>
+  <input id="in" placeholder="Ask anything" enterkeyhint="send" autocomplete="off">
+  <button id="mb" aria-label="Speak">Mic</button>
+  <button id="go" class="p">Send</button>
+</footer>
+
+<div class="ov" id="hist"><div class="pan">
+  <button id="nc" class="p" style="width:100%">New chat</button>
+  <div id="list"></div>
+</div></div>
+
+<div class="ov" id="set"><div class="pan c">
+  <b>Settings</b>
+  <label for="key">Groq API key (stays on this phone only)</label>
+  <input type="password" id="key" autocomplete="off">
+  <label for="mod">Model</label>
+  <input type="text" id="mod">
+  <label><input type="checkbox" id="spk"> Speak replies aloud</label>
+  <div style="display:flex;gap:8px;margin-top:16px">
+    <button class="p" id="ok" style="flex:1">Save</button>
+    <button id="wipe">Delete all chats</button>
+  </div>
+</div></div>
+
+<script>
+const API='https://api.groq.com/openai/v1/chat/completions';
+const SYSTEM='You are a short, direct voice assistant. Reply in 2 sentences max.';
+const IDLE=20*60*1000, CTX=20;
+const $=id=>document.getElementById(id);
+const DEF={chats:[],cur:null,key:'',model:'openai/gpt-oss-120b',speak:true};
+let S;
+try{S=Object.assign({},DEF,JSON.parse(localStorage.getItem('ss')||'{}'))}catch(e){S=Object.assign({},DEF)}
+const save=()=>{try{localStorage.setItem('ss',JSON.stringify(S))}catch(e){}};
+const cur=()=>S.chats.find(c=>c.id===S.cur);
+const st=t=>{$('st').textContent=t||''};
+const show=(id,on)=>$(id).classList.toggle('on',!!on);
+
+function newChat(){
+  const c={id:Date.now().toString(36),title:'New chat',msgs:[],updated:Date.now()};
+  S.chats.unshift(c);S.cur=c.id;save();return c;
+}
+
+function render(){
+  const c=cur(),box=$('msgs');box.innerHTML='';
+  $('ti').textContent=c?c.title:'Smart Siri';
+  if(!c||!c.msgs.length){
+    const d=document.createElement('div');d.className='empty';
+    d.textContent='Ask something. After 20 minutes without a question, the next one starts a new chat and this one stays in History.';
+    box.appendChild(d);
+  }else{
+    c.msgs.forEach(m=>{const d=document.createElement('div');d.className='m '+m.role;d.textContent=m.content;box.appendChild(d)});
+  }
+  box.scrollTop=box.scrollHeight;
+}
+
+function renderList(){
+  const l=$('list');l.innerHTML='';
+  if(!S.chats.length){const p=document.createElement('p');p.className='empty';p.textContent='No saved chats yet.';l.appendChild(p);return}
+  S.chats.forEach(c=>{
+    const d=document.createElement('div');d.className='ci'+(c.id===S.cur?' on':'');
+    const t=document.createElement('div');
+    const b=document.createElement('b');b.textContent=c.title;
+    const s=document.createElement('small');
+    s.textContent=new Date(c.updated).toLocaleString([],{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+', '+c.msgs.length+' messages';
+    t.append(b,s);
+    t.onclick=()=>{S.cur=c.id;save();render();show('hist',0)};
+    const x=document.createElement('button');x.textContent='Delete';
+    x.onclick=e=>{e.stopPropagation();if(confirm('Delete this chat?')){S.chats=S.chats.filter(z=>z.id!==c.id);if(S.cur===c.id)S.cur=null;save();render();renderList()}};
+    d.append(t,x);l.appendChild(d);
+  });
+}
+
+function unlock(){try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}}
+function speak(t){
+  if(!S.speak||!window.speechSynthesis)return;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t.replace(/[*_`#>]/g,'')));
+}
+
+async function send(text){
+  text=(text||'').trim();if(!text)return;
+  if(!S.key){st('Add your Groq key in Settings first.');$('sb').click();return}
+  let c=cur();
+  // 20-minute rule: a long pause means a new conversation; the old one stays saved
+  if(!c||Date.now()-c.updated>IDLE)c=newChat();
+  c.msgs.push({role:'user',content:text});
+  if(c.msgs.length===1)c.title=text.slice(0,40);
+  c.updated=Date.now();save();render();st('Thinking...');
+  try{
+    const msgs=[{role:'system',content:SYSTEM}].concat(c.msgs.slice(-CTX).map(m=>({role:m.role,content:m.content})));
+    const r=await fetch(API,{method:'POST',headers:{'Authorization':'Bearer '+S.key,'Content-Type':'application/json'},body:JSON.stringify({model:S.model,messages:msgs})});
+    const j=await r.json();
+    if(!r.ok)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));
+    const a=j.choices[0].message.content;
+    c.msgs.push({role:'assistant',content:a});c.updated=Date.now();
+    save();render();st('');speak(a);
+  }catch(e){st('Error: '+String(e.message).slice(0,140))}
+}
+
+let rec=null;
+function mic(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){st('Voice input is not supported in this browser. Type instead.');return}
+  if(rec){rec.stop();return}
+  unlock();
+  rec=new SR();rec.lang='en-IN';rec.interimResults=false;
+  rec.onresult=e=>send(e.results[0][0].transcript);
+  rec.onerror=e=>st('Mic error: '+e.error);
+  rec.onend=()=>{rec=null;$('mb').classList.remove('rec');if($('st').textContent==='Listening...')st('')};
+  $('mb').classList.add('rec');st('Listening...');
+  rec.start();
+}
+
+$('hb').onclick=()=>{renderList();show('hist',1)};
+$('nb').onclick=()=>{S.cur=null;save();render()};
+$('nc').onclick=()=>{S.cur=null;save();render();show('hist',0)};
+$('sb').onclick=()=>{$('key').value=S.key;$('mod').value=S.model;$('spk').checked=S.speak;show('set',1)};
+$('ok').onclick=()=>{S.key=$('key').value.trim();S.model=$('mod').value.trim()||DEF.model;S.speak=$('spk').checked;save();show('set',0)};
+$('wipe').onclick=()=>{if(confirm('Delete ALL chats?')){S.chats=[];S.cur=null;save();render();show('set',0)}};
+['hist','set'].forEach(i=>{$(i).onclick=e=>{if(e.target.id===i)show(i,0)}});
+$('go').onclick=()=>{unlock();const v=$('in').value;$('in').value='';send(v)};
+$('in').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('go').click()}};
+$('mb').onclick=mic;
+render();
+</script>
+</body>
+</html>
